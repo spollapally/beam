@@ -64,6 +64,7 @@
     <module>solr</module>
     <module>tika</module>
     <module>xml</module>
+    <module>hbase-bigtable</module>
   </modules>
 
   <profiles>
