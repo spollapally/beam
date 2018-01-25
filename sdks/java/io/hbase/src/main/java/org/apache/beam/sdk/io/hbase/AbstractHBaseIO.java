@@ -143,7 +143,7 @@ public abstract class AbstractHBaseIO {
     protected abstract AbstractSource createSource(SerializableScan serializableScan,
         Long estimatedSizeBytes);
 
-    private List<HRegionLocation> getRegionLocations(Connection connection) throws Exception {
+    protected List<HRegionLocation> getRegionLocations(Connection connection) throws Exception {
       final Scan scan = read.serializableScan.get();
       byte[] startRow = scan.getStartRow();
       byte[] stopRow = scan.getStopRow();

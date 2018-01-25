@@ -21,48 +21,35 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.TreeSet;
+
 import javax.annotation.Nullable;
+
 import org.apache.beam.sdk.annotations.Experimental;
-import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.io.hadoop.SerializableConfiguration;
 import org.apache.beam.sdk.io.range.ByteKey;
 import org.apache.beam.sdk.io.range.ByteKeyRange;
-import org.apache.beam.sdk.io.range.ByteKeyRangeTracker;
 import org.apache.beam.sdk.options.PipelineOptions;
-import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.options.ValueProvider;
+import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.transforms.PTransform;
-import org.apache.beam.sdk.transforms.ParDo;
-import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.sdk.values.PDone;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ClusterStatus;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.RegionLoad;
 import org.apache.hadoop.hbase.ServerLoad;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.BufferedMutator;
-import org.apache.hadoop.hbase.client.BufferedMutatorParams;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Mutation;
-import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.slf4j.Logger;
@@ -142,7 +129,7 @@ import org.slf4j.LoggerFactory;
  * .
  */
 @Experimental(Experimental.Kind.SOURCE_SINK)
-public class HBaseIO {
+public class HBaseIO extends AbstractHBaseIO {
   private static final Logger LOG = LoggerFactory.getLogger(HBaseIO.class);
 
   /** Disallow construction of utility class. */
@@ -156,7 +143,7 @@ public class HBaseIO {
    */
   @Experimental
   public static Read read() {
-    return new Read(null, "", new SerializableScan(new Scan()));
+    return new Read(null, ValueProvider.StaticValueProvider.of(""), new SerializableScan(new Scan()));
   }
 
   /**
@@ -165,7 +152,14 @@ public class HBaseIO {
    *
    * @see HBaseIO
    */
-  public static class Read extends PTransform<PBegin, PCollection<Result>> {
+  public static class Read extends AbstractHBaseIO.AbstractRead {
+   private static final long serialVersionUID = 0L;
+ 
+    private Read(SerializableConfiguration serializableConfiguration, ValueProvider<String> tableId,
+        SerializableScan serializableScan) {
+      super(serializableConfiguration, tableId, serializableScan);
+    }
+    
     /** Reads from the HBase instance indicated by the* given configuration. */
     public Read withConfiguration(Configuration configuration) {
       checkArgument(configuration != null, "configuration can not be null");
@@ -174,7 +168,12 @@ public class HBaseIO {
 
     /** Reads from the specified table. */
     public Read withTableId(String tableId) {
-      checkArgument(tableId != null, "tableIdcan not be null");
+      checkArgument(tableId != null, "tableId can not be null");
+      return new Read(serializableConfiguration, StaticValueProvider.of(tableId), serializableScan);
+    }
+
+    public Read withTableId(ValueProvider<String> tableId) {
+      checkArgument(tableId != null, "tableId can not be null");
       return new Read(serializableConfiguration, tableId, serializableScan);
     }
 
@@ -206,70 +205,22 @@ public class HBaseIO {
           ByteKeyRange.of(ByteKey.copyFrom(startRow), ByteKey.copyFrom(stopRow));
       return withKeyRange(keyRange);
     }
-
-    private Read(
-        SerializableConfiguration serializableConfiguration,
-        String tableId,
-        SerializableScan serializableScan) {
-      this.serializableConfiguration = serializableConfiguration;
-      this.tableId = tableId;
-      this.serializableScan = serializableScan;
-    }
-
+ 
     @Override
-    public PCollection<Result> expand(PBegin input) {
-      checkArgument(serializableConfiguration != null, "withConfiguration() is required");
-      checkArgument(!tableId.isEmpty(), "withTableId() is required");
-      try (Connection connection =
-          ConnectionFactory.createConnection(serializableConfiguration.get())) {
-        Admin admin = connection.getAdmin();
-        checkArgument(
-            admin.tableExists(TableName.valueOf(tableId)), "Table %s does not exist", tableId);
-      } catch (IOException e) {
-        LOG.warn("Error checking whether table {} exists; proceeding.", tableId, e);
-      }
-      HBaseSource source = new HBaseSource(this, null /* estimatedSizeBytes */);
-      return input.getPipeline().apply(org.apache.beam.sdk.io.Read.from(source));
+    public BoundedSource<Result> createSource() {
+      return new HBaseSource(this, null /* estimatedSizeBytes */);
     }
-
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
-      super.populateDisplayData(builder);
-      builder.add(DisplayData.item("configuration", serializableConfiguration.get().toString()));
-      builder.add(DisplayData.item("tableId", tableId));
-      builder.addIfNotNull(DisplayData.item("scan", serializableScan.get().toString()));
-    }
-
-    public String getTableId() {
-      return tableId;
-    }
-
-    public Configuration getConfiguration() {
-      return serializableConfiguration.get();
-    }
-
-    /** Returns the range of keys that will be read from the table. */
-    public ByteKeyRange getKeyRange() {
-      byte[] startRow = serializableScan.get().getStartRow();
-      byte[] stopRow = serializableScan.get().getStopRow();
-      return ByteKeyRange.of(ByteKey.copyFrom(startRow), ByteKey.copyFrom(stopRow));
-    }
-
-    private final SerializableConfiguration serializableConfiguration;
-    private final String tableId;
-    private final SerializableScan serializableScan;
   }
 
-  static class HBaseSource extends BoundedSource<Result> {
-    private final Read read;
-    @Nullable private Long estimatedSizeBytes;
+  public static class HBaseSource extends AbstractHBaseIO.AbstractSource {
+    private static final long serialVersionUID = 1L;
 
-    HBaseSource(Read read, @Nullable Long estimatedSizeBytes) {
-      this.read = read;
-      this.estimatedSizeBytes = estimatedSizeBytes;
+    public HBaseSource(Read read, @Nullable Long estimatedSizeBytes) {
+      super(read, estimatedSizeBytes);
     }
 
-    HBaseSource withStartKey(ByteKey startKey) throws IOException {
+    @Override
+    protected HBaseSource withStartKey(ByteKey startKey) throws IOException {
       checkNotNull(startKey, "startKey");
       Read newRead =
           new Read(
@@ -280,7 +231,8 @@ public class HBaseIO {
       return new HBaseSource(newRead, estimatedSizeBytes);
     }
 
-    HBaseSource withEndKey(ByteKey endKey) throws IOException {
+    @Override
+    protected HBaseSource withEndKey(ByteKey endKey) throws IOException {
       checkNotNull(endKey, "endKey");
       Read newRead =
           new Read(
@@ -340,233 +292,23 @@ public class HBaseIO {
       return estimatedSizeBytes;
     }
 
-    private List<HRegionLocation> getRegionLocations(Connection connection) throws Exception {
-      final Scan scan = read.serializableScan.get();
-      byte[] startRow = scan.getStartRow();
-      byte[] stopRow = scan.getStopRow();
-
-      final List<HRegionLocation> regionLocations = new ArrayList<>();
-
-      final boolean scanWithNoLowerBound = startRow.length == 0;
-      final boolean scanWithNoUpperBound = stopRow.length == 0;
-
-      TableName tableName = TableName.valueOf(read.tableId);
-      RegionLocator regionLocator = connection.getRegionLocator(tableName);
-      List<HRegionLocation> tableRegionInfos = regionLocator.getAllRegionLocations();
-      for (HRegionLocation regionLocation : tableRegionInfos) {
-        final byte[] startKey = regionLocation.getRegionInfo().getStartKey();
-        final byte[] endKey = regionLocation.getRegionInfo().getEndKey();
-        boolean isLastRegion = endKey.length == 0;
-        // filters regions who are part of the scan
-        if ((scanWithNoLowerBound || isLastRegion || Bytes.compareTo(startRow, endKey) < 0)
-            && (scanWithNoUpperBound || Bytes.compareTo(stopRow, startKey) > 0)) {
-          regionLocations.add(regionLocation);
-        }
-      }
-
-      return regionLocations;
-    }
-
-    private List<HBaseSource> splitBasedOnRegions(
-        List<HRegionLocation> regionLocations, int numSplits) throws Exception {
-      final Scan scan = read.serializableScan.get();
-      byte[] startRow = scan.getStartRow();
-      byte[] stopRow = scan.getStopRow();
-
-      final List<HBaseSource> sources = new ArrayList<>(numSplits);
-      final boolean scanWithNoLowerBound = startRow.length == 0;
-      final boolean scanWithNoUpperBound = stopRow.length == 0;
-
-      for (HRegionLocation regionLocation : regionLocations) {
-        final byte[] startKey = regionLocation.getRegionInfo().getStartKey();
-        final byte[] endKey = regionLocation.getRegionInfo().getEndKey();
-        boolean isLastRegion = endKey.length == 0;
-        String host = regionLocation.getHostnamePort();
-
-        final byte[] splitStart =
-            (scanWithNoLowerBound || Bytes.compareTo(startKey, startRow) >= 0)
-                ? startKey
-                : startRow;
-        final byte[] splitStop =
-            (scanWithNoUpperBound || Bytes.compareTo(endKey, stopRow) <= 0) && !isLastRegion
-                ? endKey
-                : stopRow;
-
-        LOG.debug(
-            "{} {} {} {} {}",
-            sources.size(),
-            host,
-            read.tableId,
-            Bytes.toString(splitStart),
-            Bytes.toString(splitStop));
-
-        // We need to create a new copy of the scan and read to add the new ranges
-        Scan newScan = new Scan(scan).setStartRow(splitStart).setStopRow(splitStop);
-        Read newRead =
-            new Read(read.serializableConfiguration, read.tableId, new SerializableScan(newScan));
-        sources.add(new HBaseSource(newRead, estimatedSizeBytes));
-      }
-      return sources;
-    }
-
-    @Override
-    public List<? extends BoundedSource<Result>> split(
-        long desiredBundleSizeBytes, PipelineOptions options) throws Exception {
-      LOG.debug("desiredBundleSize {} bytes", desiredBundleSizeBytes);
-      long estimatedSizeBytes = getEstimatedSizeBytes(options);
-      int numSplits = 1;
-      if (estimatedSizeBytes > 0 && desiredBundleSizeBytes > 0) {
-        numSplits = (int) Math.ceil((double) estimatedSizeBytes / desiredBundleSizeBytes);
-      }
-
-      try (Connection connection = ConnectionFactory.createConnection(read.getConfiguration())) {
-        List<HRegionLocation> regionLocations = getRegionLocations(connection);
-        int realNumSplits = numSplits < regionLocations.size() ? regionLocations.size() : numSplits;
-        LOG.debug("Suggested {} bundle(s) based on size", numSplits);
-        LOG.debug("Suggested {} bundle(s) based on number of regions", regionLocations.size());
-        final List<HBaseSource> sources = splitBasedOnRegions(regionLocations, realNumSplits);
-        LOG.debug("Split into {} bundle(s)", sources.size());
-        if (numSplits >= 1) {
-          return sources;
-        }
-        return Collections.singletonList(this);
-      }
-    }
-
     @Override
     public BoundedReader<Result> createReader(PipelineOptions pipelineOptions) throws IOException {
       return new HBaseReader(this);
     }
 
     @Override
-    public void validate() {
-      read.validate(null /* input */);
-    }
-
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
-      read.populateDisplayData(builder);
-    }
-
-    @Override
-    public Coder<Result> getOutputCoder() {
-      return HBaseResultCoder.of();
+    protected AbstractSource createSource(SerializableScan serializableScan,
+        Long estimatedSizeBytes) {
+      return new HBaseSource(new Read(this.read.getSerializableConfiguration(),
+          this.read.getTableId(), serializableScan), estimatedSizeBytes);
     }
   }
 
-  private static class HBaseReader extends BoundedSource.BoundedReader<Result> {
-    private HBaseSource source;
-    private Connection connection;
-    private ResultScanner scanner;
-    private Iterator<Result> iter;
-    private Result current;
-    private final ByteKeyRangeTracker rangeTracker;
-    private long recordsReturned;
+  private static class HBaseReader extends AbstractHBaseIO.AbstractReader {
 
     HBaseReader(HBaseSource source) {
-      this.source = source;
-      Scan scan = source.read.serializableScan.get();
-      ByteKeyRange range =
-          ByteKeyRange.of(
-              ByteKey.copyFrom(scan.getStartRow()), ByteKey.copyFrom(scan.getStopRow()));
-      rangeTracker = ByteKeyRangeTracker.of(range);
-    }
-
-    @Override
-    public boolean start() throws IOException {
-      HBaseSource source = getCurrentSource();
-      Configuration configuration = source.read.serializableConfiguration.get();
-      String tableId = source.read.tableId;
-      connection = ConnectionFactory.createConnection(configuration);
-      TableName tableName = TableName.valueOf(tableId);
-      Table table = connection.getTable(tableName);
-      // [BEAM-2319] We have to clone the Scan because the underlying scanner may mutate it.
-      Scan scanClone = new Scan(source.read.serializableScan.get());
-      scanner = table.getScanner(scanClone);
-      iter = scanner.iterator();
-      return advance();
-    }
-
-    @Override
-    public Result getCurrent() throws NoSuchElementException {
-      return current;
-    }
-
-    @Override
-    public boolean advance() throws IOException {
-      if (!iter.hasNext()) {
-        return rangeTracker.markDone();
-      }
-      final Result next = iter.next();
-      boolean hasRecord =
-          rangeTracker.tryReturnRecordAt(true, ByteKey.copyFrom(next.getRow()))
-              || rangeTracker.markDone();
-      if (hasRecord) {
-        current = next;
-        ++recordsReturned;
-      }
-      return hasRecord;
-    }
-
-    @Override
-    public void close() throws IOException {
-      LOG.debug("Closing reader after reading {} records.", recordsReturned);
-      if (scanner != null) {
-        scanner.close();
-        scanner = null;
-      }
-      if (connection != null) {
-        connection.close();
-        connection = null;
-      }
-    }
-
-    @Override
-    public synchronized HBaseSource getCurrentSource() {
-      return source;
-    }
-
-    @Override
-    public final Double getFractionConsumed() {
-      return rangeTracker.getFractionConsumed();
-    }
-
-    @Override
-    public final long getSplitPointsConsumed() {
-      return rangeTracker.getSplitPointsConsumed();
-    }
-
-    @Override
-    @Nullable
-    public final synchronized HBaseSource splitAtFraction(double fraction) {
-      ByteKey splitKey;
-      try {
-        splitKey = rangeTracker.getRange().interpolateKey(fraction);
-      } catch (RuntimeException e) {
-        LOG.info(
-            "{}: Failed to interpolate key for fraction {}.", rangeTracker.getRange(), fraction, e);
-        return null;
-      }
-      LOG.info("Proposing to split {} at fraction {} (key {})", rangeTracker, fraction, splitKey);
-      HBaseSource primary;
-      HBaseSource residual;
-      try {
-        primary = source.withEndKey(splitKey);
-        residual = source.withStartKey(splitKey);
-      } catch (Exception e) {
-        LOG.info(
-            "{}: Interpolating for fraction {} yielded invalid split key {}.",
-            rangeTracker.getRange(),
-            fraction,
-            splitKey,
-            e);
-        return null;
-      }
-      if (!rangeTracker.trySplitAtPosition(splitKey)) {
-        return null;
-      }
-      this.source = primary;
-      return residual;
+      super(source);
     }
   }
 
@@ -577,7 +319,8 @@ public class HBaseIO {
    * which table to write.
    */
   public static Write write() {
-    return new Write(null /* SerializableConfiguration */, "");
+    return new Write(null /* SerializableConfiguration */,
+        ValueProvider.StaticValueProvider.of(""));
   }
 
   /**
@@ -586,7 +329,14 @@ public class HBaseIO {
    *
    * @see HBaseIO
    */
-  public static class Write extends PTransform<PCollection<Mutation>, PDone> {
+  public static class Write extends AbstractHBaseIO.AbstractWrite {
+    private static final long serialVersionUID = 0L;
+    
+    public Write(SerializableConfiguration serializableConfiguration,
+        ValueProvider<String> tableId) {
+      super(serializableConfiguration, tableId);
+    }
+
     /** Writes to the HBase instance indicated by the* given Configuration. */
     public Write withConfiguration(Configuration configuration) {
       checkArgument(configuration != null, "configuration can not be null");
@@ -596,104 +346,12 @@ public class HBaseIO {
     /** Writes to the specified table. */
     public Write withTableId(String tableId) {
       checkArgument(tableId != null, "tableIdcan not be null");
+      return new Write(serializableConfiguration, StaticValueProvider.of(tableId));
+    }
+
+    public Write withTableId(ValueProvider<String> tableId) {
+      checkArgument(tableId != null, "tableIdcan not be null");
       return new Write(serializableConfiguration, tableId);
-    }
-
-    private Write(SerializableConfiguration serializableConfiguration, String tableId) {
-      this.serializableConfiguration = serializableConfiguration;
-      this.tableId = tableId;
-    }
-
-    @Override
-    public PDone expand(PCollection<Mutation> input) {
-      checkArgument(serializableConfiguration != null, "withConfiguration() is required");
-      checkArgument(tableId != null && !tableId.isEmpty(), "withTableId() is required");
-      try (Connection connection =
-          ConnectionFactory.createConnection(serializableConfiguration.get())) {
-        Admin admin = connection.getAdmin();
-        checkArgument(
-            admin.tableExists(TableName.valueOf(tableId)), "Table %s does not exist", tableId);
-      } catch (IOException e) {
-        LOG.warn("Error checking whether table {} exists; proceeding.", tableId, e);
-      }
-      input.apply(ParDo.of(new HBaseWriterFn(tableId, serializableConfiguration)));
-      return PDone.in(input.getPipeline());
-    }
-
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
-      super.populateDisplayData(builder);
-      builder.add(DisplayData.item("configuration", serializableConfiguration.get().toString()));
-      builder.add(DisplayData.item("tableId", tableId));
-    }
-
-    public String getTableId() {
-      return tableId;
-    }
-
-    public Configuration getConfiguration() {
-      return serializableConfiguration.get();
-    }
-
-    private final String tableId;
-    private final SerializableConfiguration serializableConfiguration;
-
-    private class HBaseWriterFn extends DoFn<Mutation, Void> {
-
-      public HBaseWriterFn(String tableId, SerializableConfiguration serializableConfiguration) {
-        this.tableId = checkNotNull(tableId, "tableId");
-        this.serializableConfiguration =
-            checkNotNull(serializableConfiguration, "serializableConfiguration");
-      }
-
-      @Setup
-      public void setup() throws Exception {
-        connection = ConnectionFactory.createConnection(serializableConfiguration.get());
-      }
-
-      @StartBundle
-      public void startBundle(StartBundleContext c) throws IOException {
-        BufferedMutatorParams params = new BufferedMutatorParams(TableName.valueOf(tableId));
-        mutator = connection.getBufferedMutator(params);
-        recordsWritten = 0;
-      }
-
-      @ProcessElement
-      public void processElement(ProcessContext c) throws Exception {
-        mutator.mutate(c.element());
-        ++recordsWritten;
-      }
-
-      @FinishBundle
-      public void finishBundle() throws Exception {
-        mutator.flush();
-        LOG.debug("Wrote {} records", recordsWritten);
-      }
-
-      @Teardown
-      public void tearDown() throws Exception {
-        if (mutator != null) {
-          mutator.close();
-          mutator = null;
-        }
-        if (connection != null) {
-          connection.close();
-          connection = null;
-        }
-      }
-
-      @Override
-      public void populateDisplayData(DisplayData.Builder builder) {
-        builder.delegate(Write.this);
-      }
-
-      private final String tableId;
-      private final SerializableConfiguration serializableConfiguration;
-
-      private Connection connection;
-      private BufferedMutator mutator;
-
-      private long recordsWritten;
     }
   }
 }

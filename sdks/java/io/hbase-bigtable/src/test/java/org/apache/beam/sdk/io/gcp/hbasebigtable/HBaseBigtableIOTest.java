@@ -472,14 +472,14 @@ public class HBaseBigtableIOTest {
   }
 
   private void runReadTest(HBaseBigtableIO.Read read, List<Result> expected) {
-    final String transformId = read.getTableId() + "_" + read.getKeyRange();
+    final String transformId = read.getTableId().get() + "_" + read.getKeyRange();
     PCollection<Result> rows = p.apply("Read" + transformId, read);
     PAssert.that(rows).containsInAnyOrder(expected);
     p.run().waitUntilFinish();
   }
 
   private void runReadTestLength(HBaseBigtableIO.Read read, long numElements) {
-    final String transformId = read.getTableId() + "_" + read.getKeyRange();
+    final String transformId = read.getTableId().get() + "_" + read.getKeyRange();
     PCollection<Result> rows = p.apply("Read" + transformId, read);
     PAssert.thatSingleton(rows.apply("Count" + transformId, Count.<Result>globally()))
         .isEqualTo(numElements);

@@ -146,20 +146,20 @@ public class HBaseBigtableIO extends AbstractHBaseIO {
   protected static class Read extends AbstractHBaseIO.AbstractRead {
     private static final long serialVersionUID = 0L;
     
-    protected Read(SerializableConfiguration serializableConfiguration,
+    private Read(SerializableConfiguration serializableConfiguration,
         ValueProvider<String> tableId,
         SerializableScan serializableScan) {
       super(serializableConfiguration, tableId, serializableScan);
     }
 
     public Read withTableId(String tableId) {
-      checkArgument(tableId != null, "tableIdcan not be null");
+      checkArgument(tableId != null, "tableId can not be null");
       return new Read(serializableConfiguration, StaticValueProvider.of(tableId),
           serializableScan);
     }
 
     public Read withTableId(ValueProvider<String> tableId) {
-      checkArgument(tableId != null, "tableIdcan not be null");
+      checkArgument(tableId != null, "tableId can not be null");
       return new Read(serializableConfiguration, tableId, serializableScan);
     }
 
@@ -251,12 +251,9 @@ public class HBaseBigtableIO extends AbstractHBaseIO {
     }
   }
 
-  protected static class BigtableSource extends AbstractHBaseIO.AbstractSource {
-    private static final long serialVersionUID = 1L;
+  public static class BigtableSource extends AbstractHBaseIO.AbstractSource {
+    private static final long serialVersionUID = 0L;
     
-    protected static final long SIZED_BASED_MAX_SPLIT_COUNT = 4_000;
-    static final long COUNT_MAX_SPLIT_COUNT = 15_360;
-
     public BigtableSource(Read read, @Nullable Long estimatedSizeBytes) {
       super(read, estimatedSizeBytes);
     }
@@ -337,7 +334,8 @@ public class HBaseBigtableIO extends AbstractHBaseIO {
     }
   }
 
-  protected static class BigtableReader extends AbstractHBaseIO.AbstractReader {
+  private static class BigtableReader extends AbstractHBaseIO.AbstractReader {
+    
     BigtableReader(BigtableSource source) {
       super(source);
     }
